@@ -1,0 +1,115 @@
+import dash
+from dash import html, dcc, Input, Output, dash_table
+import plotly.graph_objs as go
+import yfinance as yf
+import pandas as pd
+from sklearn.linear_model import LinearRegression
+from datetime import datetime, timedelta
+import numpy as np
+import dash_bootstrap_components as dbc
+
+# Initialize the Dash app with Bootstrap style
+app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
+
+# Define the layout of the app using Bootstrap components for a better look
+app.layout = dbc.Container([
+    dbc.Row(dbc.Col(html.H1("Stock Tracker and Predictor Dashboard"), className="mb-3 text-center", width=12)),
+    dbc.Row([
+        dbc.Col([
+            html.Label("Select stock symbols:", className="form-label"),
+            dcc.Dropdown(id='stock-input', 
+                         options=[
+                             {'label': 'Apple', 'value': 'AAPL'},
+                             {'label': 'Microsoft', 'value': 'MSFT'},
+                             {'label': 'Google', 'value': 'GOOGL'},
+                             {'label': 'Amazon', 'value': 'AMZN'}
+                         ],
+                         value=['AAPL'], 
+                         multi=True,
+                         className="form-control")
+        ], width=6),
+        dbc.Col([
+            html.Label("Select start date:", className="form-label"),
+            dcc.DatePickerSingle(
+                id='date-picker',
+                date=datetime.today() - timedelta(days=365),  # Default to one year ago
+                className="form-control"
+            )
+        ], width=3),
+        dbc.Col([
+            dcc.Checklist(
+                id='prediction-check',
+                options=[{'label': ' Include Prediction', 'value': 'pred'}],
+                value=[],
+                className="mt-4",
+                inline=True
+            )
+        ], width=3)
+    ], className="mb-3"),
+    dbc.Row([
+        dbc.Col(html.Button('Submit', id='submit-button', n_clicks=0, className="btn btn-primary"))
+    ]),
+    dbc.Row([
+        dbc.Col(dcc.Graph(id='stock-graph'), width=12)
+    ]),
+    dbc.Row([
+        dbc.Col(html.Div(id='historical-data-table'))
+    ]),
+    dbc.Row(dbc.Col(html.Div(id='error-message', className="text-danger text-center"), width=12))
+], fluid=True)
+
+# Callback to update graph and table
+@app.callback(
+    [Output('stock-graph', 'figure'),
+     Output('historical-data-table', 'children'),
+     Output('error-message', 'children')],
+    [Input('submit-button', 'n_clicks')],
+    [Input('stock-input', 'value'), Input('date-picker', 'date'), Input('prediction-check', 'value')]
+)
+def update_content(n_clicks, stock_symbols, start_date, include_prediction):
+    if n_clicks > 0:
+        try:
+            fig = go.Figure()
+            table_data = []
+            for symbol in stock_symbols:
+                data = yf.download(symbol, start=start_date)
+                data.dropna(inplace=True)
+                fig.add_trace(go.Scatter(x=data.index, y=data['Close'], mode='lines', name=symbol))
+                table_data.append(data.tail().reset_index())
+                
+                if 'pred' in include_prediction:
+                    # Prepare data for prediction
+                    data['Close_Lag'] = data['Close'].shift(1)
+                    data.dropna(inplace=True)
+                    X = data['Close_Lag'].values.reshape(-1, 1)
+                    y = data['Close'].values
+                    
+                    # Fit model
+                    model = LinearRegression()
+                    model.fit(X[:-1], y[1:])
+                    
+                    # Predict next day
+                    next_day_prediction = model.predict([[data['Close'].iloc[-1]]])
+                    fig.add_trace(go.Scatter(x=[data.index[-1] + timedelta(days=1)], y=next_day_prediction, mode='markers', name=f'{symbol} Prediction'))
+            
+            fig.update_layout(
+                title='Stock Prices and Predictions',
+                xaxis_title='Date',
+                yaxis_title='Price (USD)',
+                template="plotly_dark"
+            )
+            
+            tables = [dash_table.DataTable(
+                data=df.to_dict('records'), 
+                columns=[{"name": i, "id": i} for i in df.columns], 
+                page_size=5,
+                style_table={'height': '300px', 'overflowY': 'auto'}
+            ) for df in table_data]
+            return fig, tables, ''
+        except Exception as e:
+            return go.Figure(), [], f'An error occurred: {e}'
+    return go.Figure(), [], ''
+
+# Run the app
+if __name__ == '__main__':
+    app.run_server(debug=True)
